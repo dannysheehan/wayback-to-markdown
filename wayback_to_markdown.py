@@ -141,29 +141,42 @@ def record_host(record: dict[str, str]) -> str:
     return urllib.parse.urlparse(record["original"]).netloc.lower().split("@")[-1].split(":")[0]
 
 
-def load_cdx(client: RateLimitedClient, domain: str, include_subdomains: bool, limit: int | None) -> list[dict[str, str]]:
+def load_cdx(
+    client: RateLimitedClient,
+    domain: str,
+    include_subdomains: bool,
+    limit: int | None,
+) -> list[dict[str, str]]:
     body, _headers = client.fetch(cdx_url(domain, include_subdomains, limit))
     data = json.loads(body.decode("utf-8"))
     if not data:
         return []
     header = data[0]
-    records = [dict(zip(header, row)) for row in data[1:]]
+    records = [dict(zip(header, row, strict=False)) for row in data[1:]]
     # CDX matching can be broader than expected. Exact-host mode filters records
     # back to the requested host so www.example.com does not silently pull in
     # www2.example.com or other neighboring hosts.
     if include_subdomains:
         bare = domain.removeprefix("www.")
-        return [record for record in records if record_host(record) == bare or record_host(record).endswith("." + bare)]
+        return [
+            record
+            for record in records
+            if record_host(record) == bare or record_host(record).endswith("." + bare)
+        ]
     return [record for record in records if record_host(record) == domain]
 
 
-def load_alternate_captures(client: RateLimitedClient, original_url: str, limit: int) -> list[dict[str, str]]:
+def load_alternate_captures(
+    client: RateLimitedClient,
+    original_url: str,
+    limit: int,
+) -> list[dict[str, str]]:
     body, _headers = client.fetch(cdx_captures_url(original_url, limit))
     data = json.loads(body.decode("utf-8"))
     if not data:
         return []
     header = data[0]
-    return [dict(zip(header, row)) for row in data[1:]]
+    return [dict(zip(header, row, strict=False)) for row in data[1:]]
 
 
 def safe_slug(value: str, fallback: str) -> str:
@@ -214,7 +227,9 @@ def soup_title(soup: Any) -> str:
     if not title_tag:
         title_tag = soup.select_one("div.post h2.storytitle")
     if not title_tag:
-        title_tag = soup.select_one(".post h1.title, article h1.title, h1.entry-title, .entry-title")
+        title_tag = soup.select_one(
+            ".post h1.title, article h1.title, h1.entry-title, .entry-title",
+        )
     if not title_tag:
         title_tag = soup.find("title")
     return clean(title_tag.get_text(" ", strip=True)) if title_tag else ""
@@ -316,7 +331,8 @@ def block_md(node: Any, depth: int = 0) -> str:
                 lines.append(f"{'  ' * depth}{marker} {body}")
         return "\n".join(lines) + ("\n" if lines else "")
     if name == "blockquote":
-        body = "\n".join(line for line in "".join(block_md(c, depth) for c in node.children).splitlines() if line.strip())
+        block_text = "".join(block_md(c, depth) for c in node.children)
+        body = "\n".join(line for line in block_text.splitlines() if line.strip())
         return "\n".join("> " + line for line in body.splitlines()) + "\n" if body else ""
     if name == "pre":
         return "```\n" + node.get_text().strip("\n") + "\n```\n"
@@ -360,7 +376,8 @@ def html_to_markdown(html_text: str) -> tuple[str, str]:
     if BeautifulSoup is None:
         parser = BasicHTMLText()
         parser.feed(html_text)
-        body = re.sub(r"\n{3,}", "\n\n", "\n".join(line.strip() for line in "".join(parser.parts).splitlines())).strip()
+        fallback_body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines())
+        body = re.sub(r"\n{3,}", "\n\n", fallback_body).strip()
         return clean(parser.title), body
     soup = BeautifulSoup(html_text, "html.parser")
     title = soup_title(soup)
@@ -374,9 +391,18 @@ def yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def write_markdown(path: Path, title: str, body: str, record: dict[str, str], archive_url: str) -> None:
+def write_markdown(
+    path: Path,
+    title: str,
+    body: str,
+    record: dict[str, str],
+    archive_url: str,
+) -> None:
     if not title:
-        title = Path(urllib.parse.urlparse(record["original"]).path).stem.replace("-", " ").title() or "Archived Page"
+        title = (
+            Path(urllib.parse.urlparse(record["original"]).path).stem.replace("-", " ").title()
+            or "Archived Page"
+        )
     frontmatter = [
         "---",
         f"title: {yaml_string(title)}",
@@ -422,9 +448,15 @@ def fetch_archived_page(
                 and not loaded_alternates
             ):
                 loaded_alternates = True
-                alternates = load_alternate_captures(client, record["original"], alternate_capture_limit)
+                alternates = load_alternate_captures(
+                    client,
+                    record["original"],
+                    alternate_capture_limit,
+                )
                 seen = {record["timestamp"]}
-                candidates.extend(candidate for candidate in alternates if candidate["timestamp"] not in seen)
+                candidates.extend(
+                    candidate for candidate in alternates if candidate["timestamp"] not in seen
+                )
                 seen.update(candidate["timestamp"] for candidate in candidates)
                 continue
             raise
@@ -432,9 +464,15 @@ def fetch_archived_page(
             last_error = exc
             if alternate_capture_limit > 0 and not loaded_alternates:
                 loaded_alternates = True
-                alternates = load_alternate_captures(client, record["original"], alternate_capture_limit)
+                alternates = load_alternate_captures(
+                    client,
+                    record["original"],
+                    alternate_capture_limit,
+                )
                 seen = {record["timestamp"]}
-                candidates.extend(candidate for candidate in alternates if candidate["timestamp"] not in seen)
+                candidates.extend(
+                    candidate for candidate in alternates if candidate["timestamp"] not in seen
+                )
                 seen.update(candidate["timestamp"] for candidate in candidates)
                 continue
             raise
@@ -501,8 +539,16 @@ def run(args: argparse.Namespace) -> int:
     pages = [item for item in existing if item.get("status") == "ok"]
     # Track paths already emitted by resumed runs so new duplicate URLs still get
     # deterministic hash suffixes rather than clobbering old files.
-    used_md = {Path(item["markdown_file"]).relative_to(content_dir) for item in pages if item.get("markdown_file")}
-    used_raw = {Path(item["raw_html_file"]).relative_to(raw_dir) for item in pages if item.get("raw_html_file")}
+    used_md = {
+        Path(item["markdown_file"]).relative_to(content_dir)
+        for item in pages
+        if item.get("markdown_file")
+    }
+    used_raw = {
+        Path(item["raw_html_file"]).relative_to(raw_dir)
+        for item in pages
+        if item.get("raw_html_file")
+    }
 
     for idx, record in enumerate(records, 1):
         original = record["original"]
@@ -534,7 +580,8 @@ def run(args: argparse.Namespace) -> int:
             write_markdown(md_path, title, markdown_body, successful_record, archive_url)
             if successful_record["timestamp"] != record["timestamp"]:
                 print(
-                    f"{idx}/{len(records)} alternate {original}: {record['timestamp']} -> {successful_record['timestamp']}",
+                    f"{idx}/{len(records)} alternate {original}: "
+                    f"{record['timestamp']} -> {successful_record['timestamp']}",
                     flush=True,
                 )
             item.update(
@@ -569,20 +616,60 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("domain", help="Domain or host to archive, for example www.ftmon.org")
     parser.add_argument("--output", default="sites", help="Output root. Default: sites")
-    parser.add_argument("--delay", type=float, default=2.0, help="Minimum seconds between Wayback requests. Default: 2")
-    parser.add_argument("--retries", type=int, default=5, help="Retries for 429/5xx/timeouts. Default: 5")
-    parser.add_argument("--timeout", type=float, default=60.0, help="Per-request timeout in seconds. Default: 60")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=2.0,
+        help="Minimum seconds between Wayback requests. Default: 2",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        help="Retries for 429/5xx/timeouts. Default: 5",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="Per-request timeout in seconds. Default: 60",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Limit CDX results for testing")
-    parser.add_argument("--include-subdomains", action="store_true", help="Use *.domain in the CDX query")
-    parser.add_argument("--resume", action="store_true", default=True, help="Skip already downloaded pages from manifest. Default: on")
-    parser.add_argument("--no-resume", action="store_false", dest="resume", help="Ignore existing manifest")
-    parser.add_argument("--use-existing-cdx", action="store_true", help="Reuse metadata/cdx.json instead of querying CDX")
-    parser.add_argument("--reconvert-existing", action="store_true", help="Rebuild Markdown from existing raw HTML for skipped pages")
+    parser.add_argument(
+        "--include-subdomains",
+        action="store_true",
+        help="Use *.domain in the CDX query",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=True,
+        help="Skip already downloaded pages from manifest. Default: on",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_false",
+        dest="resume",
+        help="Ignore existing manifest",
+    )
+    parser.add_argument(
+        "--use-existing-cdx",
+        action="store_true",
+        help="Reuse metadata/cdx.json instead of querying CDX",
+    )
+    parser.add_argument(
+        "--reconvert-existing",
+        action="store_true",
+        help="Rebuild Markdown from existing raw HTML for skipped pages",
+    )
     parser.add_argument(
         "--alternate-capture-limit",
         type=int,
         default=10,
-        help="When a replay fails, try up to this many alternate captures for the same URL. Default: 10",
+        help=(
+            "When a replay fails, try up to this many alternate captures for "
+            "the same URL. Default: 10"
+        ),
     )
     return parser.parse_args()
 

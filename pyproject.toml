@@ -1,0 +1,36 @@
+[project]
+name = "wayback-to-markdown"
+version = "0.1.0"
+description = "Download Wayback Machine HTML pages and convert them to Markdown."
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "SIM",
+    "UP",
+]
+ignore = [
+    # The CLI intentionally catches page-level failures, persists them in the
+    # manifest, and continues the rest of the archive run.
+    "BLE001",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

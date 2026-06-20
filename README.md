@@ -27,6 +27,25 @@ python3 -m pip install beautifulsoup4
 
 If BeautifulSoup is not installed, the script falls back to a simpler built-in HTML parser. The fallback works, but article body extraction is usually cleaner with BeautifulSoup.
 
+## Development
+
+Create a virtual environment and install development dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+```
+
+Run the local checks:
+
+```bash
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The GitHub Actions workflow runs the same lint, format, and unit test checks on Python 3.10, 3.11, and 3.12.
+
 ## Usage
 
 ```bash
