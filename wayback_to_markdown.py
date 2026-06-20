@@ -13,12 +13,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
-
 
 USER_AGENT = "wayback-to-markdown/1.0 (+local archival use)"
 
