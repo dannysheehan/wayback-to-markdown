@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 .ruff_cache/
+.uv-cache/
 *.egg-info/
 sites/
 *.log
