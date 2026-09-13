@@ -13,18 +13,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-try:
-    from bs4 import BeautifulSoup, Comment, NavigableString, Tag
-except ImportError:  # pragma: no cover - fallback is exercised only without bs4
-    BeautifulSoup = None
-    Comment = str
-    NavigableString = str
-    Tag = object
-
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 USER_AGENT = "wayback-to-markdown/1.0 (+local archival use)"
 
@@ -102,19 +94,14 @@ def cdx_url(domain: str, include_subdomains: bool, limit: int | None) -> str:
     # collapse=urlkey asks CDX for one representative capture per URL. Without
     # it, large WordPress sites can return thousands of snapshots for the same
     # page before we ever get to distinct articles.
-    params = {
-        "url": f"{query_host}/*",
-        "output": "json",
-        "fl": "timestamp,original,statuscode,mimetype,digest",
-        "filter": ["statuscode:200", "mimetype:text/html"],
-        "collapse": "urlkey",
-    }
-    pairs: list[tuple[str, str]] = []
-    for key, value in params.items():
-        if isinstance(value, list):
-            pairs.extend((key, item) for item in value)
-        else:
-            pairs.append((key, value))
+    pairs = [
+        ("url", f"{query_host}/*"),
+        ("output", "json"),
+        ("fl", "timestamp,original,statuscode,mimetype,digest"),
+        ("filter", "statuscode:200"),
+        ("filter", "mimetype:text/html"),
+        ("collapse", "urlkey"),
+    ]
     if limit:
         pairs.append(("limit", str(limit)))
     return "https://web.archive.org/cdx/search/cdx?" + urllib.parse.urlencode(pairs)
@@ -185,26 +172,28 @@ def safe_slug(value: str, fallback: str) -> str:
     return value[:90] or fallback
 
 
-def output_relative_path(original: str, title: str, used: set[Path]) -> Path:
+def _url_parts(original: str) -> list[str]:
     parsed = urllib.parse.urlparse(original)
     path = urllib.parse.unquote(parsed.path or "/").strip("/")
-    if not path:
-        path = "index"
-    if path.endswith("/"):
-        path = path.rstrip("/")
-    parts = [safe_slug(part, "page") for part in path.split("/") if part]
+    return [safe_slug(part, "page") for part in path.split("/") if part]
+
+
+def _resolve_collision(rel: Path, original: str, used: set[Path]) -> Path:
+    if rel in used:
+        suffix = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+        rel = rel.with_name(f"{rel.stem}-{suffix}{rel.suffix}")
+    used.add(rel)
+    return rel
+
+
+def output_relative_path(original: str, title: str, used: set[Path]) -> Path:
+    parts = _url_parts(original)
     if not parts:
         parts = ["index"]
     if parts[-1] in {"index", "index-html", "index-php"} and title:
         parts[-1] = safe_slug(title, parts[-1])
     rel = Path(*parts).with_suffix(".md")
-    # Query-string variants and duplicate titles often map to the same filename.
-    # Add a stable hash suffix rather than overwriting an earlier capture.
-    if rel in used:
-        suffix = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
-        rel = rel.with_name(f"{rel.stem}-{suffix}.md")
-    used.add(rel)
-    return rel
+    return _resolve_collision(rel, original, used)
 
 
 def raw_html_path(original: str, used: set[Path]) -> Path:
@@ -215,11 +204,7 @@ def raw_html_path(original: str, used: set[Path]) -> Path:
     rel = Path(*[safe_slug(part, "page") for part in path.split("/") if part])
     if rel.suffix.lower() not in {".html", ".htm", ".php"}:
         rel = rel.with_suffix(".html")
-    if rel in used:
-        suffix = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
-        rel = rel.with_name(f"{rel.stem}-{suffix}{rel.suffix}")
-    used.add(rel)
-    return rel
+    return _resolve_collision(rel, original, used)
 
 
 def soup_title(soup: Any) -> str:
@@ -282,11 +267,11 @@ def clean(text: str) -> str:
 
 
 def inline_md(node: Any) -> str:
-    if BeautifulSoup is not None and isinstance(node, Comment):
+    if isinstance(node, Comment):
         return ""
-    if BeautifulSoup is not None and isinstance(node, NavigableString):
+    if isinstance(node, NavigableString):
         return str(node).replace("\xa0", " ")
-    if BeautifulSoup is None or not isinstance(node, Tag):
+    if not isinstance(node, Tag):
         return str(node).replace("\xa0", " ") if isinstance(node, str) else ""
     name = node.name.lower()
     text = "".join(inline_md(c) for c in node.children)
@@ -307,11 +292,11 @@ def inline_md(node: Any) -> str:
 
 
 def block_md(node: Any, depth: int = 0) -> str:
-    if BeautifulSoup is not None and isinstance(node, Comment):
+    if isinstance(node, Comment):
         return ""
-    if BeautifulSoup is not None and isinstance(node, NavigableString):
+    if isinstance(node, NavigableString):
         return clean(str(node))
-    if BeautifulSoup is None or not isinstance(node, Tag):
+    if not isinstance(node, Tag):
         return ""
     name = node.name.lower()
     if name in {"script", "style", "nav", "form", "aside"}:
@@ -342,53 +327,13 @@ def block_md(node: Any, depth: int = 0) -> str:
     return "\n".join(p for p in parts if p.strip()) + ("\n" if parts else "")
 
 
-class BasicHTMLText(HTMLParser):
-    """Dependency-free fallback used when BeautifulSoup is not installed."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.title = ""
-        self.in_title = False
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "title":
-            self.in_title = True
-        if tag in {"p", "br", "h1", "h2", "h3", "li"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "title":
-            self.in_title = False
-        if tag in {"p", "h1", "h2", "h3", "li"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        text = clean(data)
-        if not text:
-            return
-        if self.in_title:
-            self.title += " " + text
-        self.parts.append(text + " ")
-
-
 def html_to_markdown(html_text: str) -> tuple[str, str]:
-    if BeautifulSoup is None:
-        parser = BasicHTMLText()
-        parser.feed(html_text)
-        fallback_body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines())
-        body = re.sub(r"\n{3,}", "\n\n", fallback_body).strip()
-        return clean(parser.title), body
     soup = BeautifulSoup(html_text, "html.parser")
     title = soup_title(soup)
     content = soup_main_content(soup)
     body = block_md(content).strip()
     body = re.sub(r"\n{3,}", "\n\n", body)
     return title, body
-
-
-def yaml_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
 
 
 def write_markdown(
@@ -405,11 +350,11 @@ def write_markdown(
         )
     frontmatter = [
         "---",
-        f"title: {yaml_string(title)}",
-        f"original_url: {yaml_string(record['original'])}",
-        f"archive_url: {yaml_string(archive_url)}",
-        f"wayback_timestamp: {yaml_string(record['timestamp'])}",
-        f"mimetype: {yaml_string(record.get('mimetype', ''))}",
+        f"title: {json.dumps(title, ensure_ascii=False)}",
+        f"original_url: {json.dumps(record['original'], ensure_ascii=False)}",
+        f"archive_url: {json.dumps(archive_url, ensure_ascii=False)}",
+        f"wayback_timestamp: {json.dumps(record['timestamp'], ensure_ascii=False)}",
+        f"mimetype: {json.dumps(record.get('mimetype', ''), ensure_ascii=False)}",
         "---",
         "",
     ]
@@ -431,6 +376,20 @@ def fetch_archived_page(
     loaded_alternates = False
     last_error: Exception | None = None
 
+    def queue_alternates() -> None:
+        nonlocal loaded_alternates
+        loaded_alternates = True
+        alternates = load_alternate_captures(
+            client,
+            record["original"],
+            alternate_capture_limit,
+        )
+        seen = {record["timestamp"]}
+        candidates.extend(
+            candidate for candidate in alternates if candidate["timestamp"] not in seen
+        )
+        seen.update(candidate["timestamp"] for candidate in candidates)
+
     while candidates:
         candidate = candidates.pop(0)
         archive_url = archive_url_for(candidate)
@@ -447,33 +406,13 @@ def fetch_archived_page(
                 and alternate_capture_limit > 0
                 and not loaded_alternates
             ):
-                loaded_alternates = True
-                alternates = load_alternate_captures(
-                    client,
-                    record["original"],
-                    alternate_capture_limit,
-                )
-                seen = {record["timestamp"]}
-                candidates.extend(
-                    candidate for candidate in alternates if candidate["timestamp"] not in seen
-                )
-                seen.update(candidate["timestamp"] for candidate in candidates)
+                queue_alternates()
                 continue
             raise
         except Exception as exc:
             last_error = exc
             if alternate_capture_limit > 0 and not loaded_alternates:
-                loaded_alternates = True
-                alternates = load_alternate_captures(
-                    client,
-                    record["original"],
-                    alternate_capture_limit,
-                )
-                seen = {record["timestamp"]}
-                candidates.extend(
-                    candidate for candidate in alternates if candidate["timestamp"] not in seen
-                )
-                seen.update(candidate["timestamp"] for candidate in candidates)
+                queue_alternates()
                 continue
             raise
     raise RuntimeError(f"all captures failed for {record['original']}: {last_error}")

@@ -17,15 +17,13 @@ The tool is designed for long-running archive jobs where the Wayback Machine may
 
 ## Requirements
 
-Python 3.10+.
+Python 3.10+ and the dependencies declared in `pyproject.toml` (BeautifulSoup 4.12+ is required).
 
-Optional but recommended:
+Install with:
 
 ```bash
 uv sync
 ```
-
-If BeautifulSoup is not installed, the script falls back to a simpler built-in HTML parser. The fallback works, but article body extraction is usually cleaner with BeautifulSoup.
 
 ## Development
 
